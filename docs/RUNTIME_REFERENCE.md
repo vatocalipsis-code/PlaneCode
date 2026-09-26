@@ -6,7 +6,7 @@ The only Host-facing JavaScript boundary is exported by runtime/public-runtime.j
 
 - PlaneCodeEngine.getDescriptor()
 - PlaneCodeEngine.connect(selection)
-- ConnectionHandle.prepare({SetLang, SetData, SetRender})
+- ConnectionHandle.prepare({SetLang, SetData, SetRender, Resources?})
 - ConnectionHandle.close()
 - RuntimeHandle.mount(RenderTarget)
 - RuntimeHandle.setEventSink(sinkOrNull)
@@ -28,13 +28,13 @@ MOUNTED_INACTIVE is physically inert. enableInteraction requires an EventSink wh
 
 ## Validation and compilation
 
-SetLang, SetData, and SetRender are full Set envelopes with non-empty Name, a positive integer Version, and Data. SetLang is validated and compiled once into an immutable Object Plan during prepare. SetData updates validate the complete replacement and patch bound Container slots without recompiling SetLang.
+`SetLang`, `SetData`, and `SetRender` are full Set envelopes with non-empty Name, a positive integer Version, and Data. Optional `Resources` v1 is validated separately as packaging, not as a fourth Set. SetLang is validated and compiled once into an immutable Object Plan during prepare. SetData updates validate the complete replacement and patch bound Container slots without recompiling SetLang.
 
-SourcePicture accepts local PNG references only. URI schemes, protocol-relative paths, parent traversal, backslashes, and non-PNG extensions are rejected.
+SourcePicture accepts prior local PNG references and canonical `res:<name>` references to `Resources.Pictures`. `Container.Font` references `Resources.Fonts`. Missing resources are rejected during prepare and SetData replacement.
 
 ## Rendering and events
 
-runtime/web-renderer.js reads object rules from the immutable plan, values from SetData, and scene defaults from SetRender. PNG intrinsic alpha and aspect ratio are preserved. PictureTint uses the PNG as an alpha mask.
+`runtime/web-renderer.js` reads object rules from the immutable plan, values from SetData, scene defaults from SetRender, and optional packaged resources. WOFF2 resources are installed through `@font-face`; packaged PNG resources resolve to in-memory data URLs. PNG intrinsic alpha and aspect ratio are preserved. PictureTint uses the PNG as an alpha mask.
 
 Primary-pointer OnPress is emitted on a valid press. OffPress is emitted only for a same-panel successful release. Pointer cancellation, capture loss, movement into navigation, disableInteraction, and dispose cancel the claim. Each event carries a connection-unique EventId, EventType, ObjectLogin, and the opaque token.
 
