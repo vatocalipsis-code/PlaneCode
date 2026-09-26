@@ -115,9 +115,13 @@ The former experimental Container routing properties `Flip` and sibling-routing 
 
 Text constrained by an explicit/fill width uses single-line ellipsis overflow. SourcePicture uses contain behavior and preserves intrinsic PNG alpha and aspect ratio.
 
+Container may select one packaged WOFF2 resource through `Font = "<resource-name>"`. `Font` identifies only the resource/family; `FontSize` and `FontWeight` remain independent properties. A missing referenced font resource is a validation error.
+
 ## SourcePicture
 
 SourcePicture references PNG only. Intrinsic PNG alpha is preserved.
+
+A self-contained SPL may reference a packaged PNG with `SourcePicture = "res:<picture-resource-name>"`. The name resolves against top-level `Resources.Pictures`; a missing resource is a validation error.
 
 ## PanelTransparency
 
@@ -143,7 +147,7 @@ BorderRightColor / BorderRightWidth
 BorderTopColor / BorderTopWidth
 BorderBottomColor / BorderBottomWidth
 TextColor
-FontSize / FontWeight
+Font / FontSize / FontWeight
 PictureTint
 Width / Height
 Padding / Gap
