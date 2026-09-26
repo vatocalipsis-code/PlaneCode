@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createPlaneCodeEngine} from "../runtime/public-runtime-core.js";
 import {compileSetLang} from "../runtime/setlang-compiler.js";
-import {validatePLang,validateSetData,validateSetEnvelope,validateSetRender,isCanonicalPngFile} from "../runtime/validator.js";
+import {validatePLang,validateSetData,validateSetEnvelope,validateSetRender,validateResources,isCanonicalPngFile} from "../runtime/validator.js";
 
 const setLang={Name:"test-lang",Version:1,Data:[{
   Login:"Base",Properties:{Direction:"Vertical"},Layout:[],SimplePanels:[{
@@ -26,16 +26,16 @@ function harness(options={}){
   let compileCount=0;
   const sessions=[],calls={patch:0,dispose:0,cancel:0,render:0};
   const renderer={
-    mount(target,plan,data,render,interaction){if(options.failMount)throw new Error("mount boom");sessions.push({target,plan,data,render,interaction});calls.render++},
-    patchData(target,data){calls.patch++;sessions.find(x=>x.target===target).data=data},
-    rerender(target,plan,data,render,interaction){calls.render++;sessions.push({target,plan,data,render,interaction})},
+    mount(target,plan,data,render,interaction,resources){if(options.failMount)throw new Error("mount boom");sessions.push({target,plan,data,render,interaction,resources});calls.render++},
+    patchData(target,data,render,resources){calls.patch++;const session=sessions.find(x=>x.target===target);session.data=data;session.resources=resources},
+    rerender(target,plan,data,render,interaction,resources){calls.render++;sessions.push({target,plan,data,render,interaction,resources})},
     cancelInteraction(){calls.cancel++},
     dispose(){calls.dispose++}
   };
   const engine=createPlaneCodeEngine({
     descriptor:{ComponentVersion:"2.11.0",GenerationId:"pcode.layout-group.v1",SupportedSerializationVersions:[1],Capabilities:["pcode.editable-input.v1"]},
     compile(value){compileCount++;return compileSetLang(value)},
-    validateEnvelope:validateSetEnvelope,validatePlan:validatePLang,validateData:validateSetData,validateRender:validateSetRender,renderer
+    validateEnvelope:validateSetEnvelope,validatePlan:validatePLang,validateData:validateSetData,validateRender:validateSetRender,validateResources,renderer
   });
   return {engine,sessions,calls,get compileCount(){return compileCount}};
 }
@@ -148,4 +148,40 @@ test("secret input validation diagnostics never contain plaintext",async()=>{
 test("legacy v1 plan remains compatible without editable capability",async()=>{
   const h=harness();const connection=connect(h.engine).Connection;
   assert.equal((await connection.prepare({SetLang:setLang,SetData:setData,SetRender:setRender})).Outcome,"Completed");
+});
+
+
+const FONT_WOFF2="d09GMg==";
+const PNG_BASE64="iVBORw0KGgo=";
+const resources={Version:1,Fonts:[{Name:"ui.primary",Mime:"font/woff2",Data:FONT_WOFF2}],Pictures:[{Name:"icon.add",Mime:"image/png",Data:PNG_BASE64}]};
+
+test("Resources v1 validates WOFF2/PNG and rejects a third font",()=>{
+  assert.doesNotThrow(()=>validateResources(resources));
+  const three=structuredClone(resources);
+  three.Fonts.push({Name:"two",Mime:"font/woff2",Data:FONT_WOFF2},{Name:"three",Mime:"font/woff2",Data:FONT_WOFF2});
+  assert.throws(()=>validateResources(three),/0\.\.2/);
+  const wrong=structuredClone(resources);wrong.Pictures[0].Data=FONT_WOFF2;
+  assert.throws(()=>validateResources(wrong),/does not match image\/png/);
+});
+
+test("Container.Font and res: pictures require packaged resources",async()=>{
+  const fontLang=structuredClone(setLang);
+  fontLang.Data[0].SimplePanels[0].ActivePanels[0].Layout[0].Properties.Font="ui.primary";
+  const resData=structuredClone(setData);resData.Data.Icon.SourcePicture="res:icon.add";
+  const h=harness();const connection=connect(h.engine).Connection;
+  const missing=await connection.prepare({SetLang:fontLang,SetData:resData,SetRender:setRender});
+  assert.equal(missing.Outcome,"Rejected");
+  const prepared=await connection.prepare({SetLang:fontLang,SetData:resData,SetRender:setRender,Resources:resources});
+  assert.equal(prepared.Outcome,"Completed");
+  assert.equal((await prepared.Runtime.mount({})).Outcome,"Completed");
+  assert.equal(h.sessions.at(-1).resources.Fonts[0].Name,"ui.primary");
+});
+
+test("applySetData keeps Resources available to resource picture patches",async()=>{
+  const resData=structuredClone(setData);resData.Data.Icon.SourcePicture="res:icon.add";
+  const h=harness();const prepared=await connect(h.engine).Connection.prepare({SetLang:setLang,SetData:resData,SetRender:setRender,Resources:resources});
+  const target={};await prepared.Runtime.mount(target);
+  const next=structuredClone(resData);next.Version=2;
+  assert.equal((await prepared.Runtime.applySetData(next)).Outcome,"Completed");
+  assert.equal(h.sessions[0].resources.Pictures[0].Name,"icon.add");
 });
