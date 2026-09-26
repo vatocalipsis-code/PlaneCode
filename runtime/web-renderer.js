@@ -1,11 +1,38 @@
 /** Browser renderer for compiled P.Code Object Plans. */
 const activeParallax=new WeakMap();
 const activeInteraction=new WeakMap();
+const activeResourceStyles=new WeakMap();
+let resourceScopeCounter=0;
 const px=v=>String(v)+"px";
 const opacityFromTransparency=v=>String(1-v);
 const structuralPercent=t=>String((1-t)*100)+"%";
 const combinedPanelTransparency=(r,p=0)=>1-((1-r.Transparency)*(1-p));
 const structuralColor=(c,r,p=0)=>"color-mix(in srgb, "+c+" "+structuralPercent(combinedPanelTransparency(r,p))+", transparent)";
+function resourceFamily(scope,name){return "PCodeRes_"+scope+"_"+String(name).replace(/[^A-Za-z0-9_-]/g,"_")}
+function prepareResources(root,resources){
+  activeResourceStyles.get(root)?.remove?.();activeResourceStyles.delete(root);
+  const fonts=new Map(),pictures=new Map();
+  if(!resources)return {fonts,pictures};
+  const scope=++resourceScopeCounter;
+  const doc=root?.ownerDocument??globalThis.document;
+  const rules=[];
+  for(const item of resources.Fonts??[]){
+    const family=resourceFamily(scope,item.Name);
+    fonts.set(item.Name,family);
+    rules.push('@font-face{font-family:"'+family+'";src:url("data:font/woff2;base64,'+item.Data+'") format("woff2");font-style:normal;font-weight:1 1000;}');
+  }
+  for(const item of resources.Pictures??[])pictures.set(item.Name,'data:image/png;base64,'+item.Data);
+  if(rules.length&&doc?.createElement&&doc?.head){
+    const style=doc.createElement("style");style.dataset.pcodeResources="";style.textContent=rules.join("\n");doc.head.append(style);activeResourceStyles.set(root,style);
+  }
+  return {fonts,pictures};
+}
+function resolvePicture(value,resources){
+  if(typeof value!=="string"||!value.startsWith("res:"))return value;
+  const name=value.slice(4),resolved=resources?.pictures?.get(name);
+  if(!resolved)throw new Error("WebRenderer: missing picture resource "+name);
+  return resolved;
+}
 function contentShadowFilter(d){return d>0?"drop-shadow("+(d/7)+"px "+d+"px "+(d*10/7)+"px rgba(0, 12, 22, .62))":""}
 function alignmentValue(v){return {Start:"flex-start",Center:"center",End:"flex-end",Stretch:"stretch"}[v]}
 function distributionValue(v){return {Start:"flex-start",Center:"center",End:"flex-end",Between:"space-between",Around:"space-around",Evenly:"space-evenly"}[v]}
@@ -44,18 +71,18 @@ function applyContainerContentLayout(content,rule={}){
   if(direction==="Horizontal"){content.style.justifyContent=h;content.style.alignItems=v}else{content.style.justifyContent=v;content.style.alignItems=h}
   if(rule.Gap!==undefined)content.style.gap=px(rule.Gap);
 }
-function renderSource(source,renderSet,rule,shadow=0){
+function renderSource(source,renderSet,rule,shadow=0,resources=null){
   if(source.kind==="Text"){
     const e=document.createElement("span");e.dataset.planeSource="Text";e.textContent=source.value;e.style.opacity=opacityFromTransparency(renderSet.TextTransparency);
-    if(rule?.TextColor!==undefined)e.style.color=rule.TextColor;if(rule?.FontSize!==undefined)e.style.fontSize=px(rule.FontSize);if(rule?.FontWeight!==undefined)e.style.fontWeight=String(rule.FontWeight);if(shadow>0)e.style.filter=contentShadowFilter(shadow);return e;
+    if(rule?.TextColor!==undefined)e.style.color=rule.TextColor;if(rule?.FontSize!==undefined)e.style.fontSize=px(rule.FontSize);if(rule?.FontWeight!==undefined)e.style.fontWeight=String(rule.FontWeight);if(rule?.Font!==undefined){const family=resources?.fonts?.get(rule.Font);if(!family)throw new Error("WebRenderer: missing font resource "+rule.Font);e.style.fontFamily='"'+family+'"'}if(shadow>0)e.style.filter=contentShadowFilter(shadow);return e;
   }
   if(source.kind==="Picture"){
     if(rule?.PictureTint!==undefined){
-      const p=document.createElement("span");p.dataset.planeSource="Picture";p.dataset.planePictureTint="present";p.style.opacity=opacityFromTransparency(renderSet.PictureTransparency);if(shadow>0)p.style.filter=contentShadowFilter(shadow);
-      const s=document.createElement("img");s.src=source.value;s.alt="";s.setAttribute("aria-hidden","true");s.dataset.planePictureSizer="";
-      const t=document.createElement("span");t.dataset.planePictureTintLayer="";t.style.backgroundColor=rule.PictureTint;t.style.maskImage='url("'+source.value+'")';t.style.webkitMaskImage=t.style.maskImage;p.append(s,t);return p;
+      const resolved=resolvePicture(source.value,resources);const p=document.createElement("span");p.dataset.planeSource="Picture";p.dataset.planePictureTint="present";p.style.opacity=opacityFromTransparency(renderSet.PictureTransparency);if(shadow>0)p.style.filter=contentShadowFilter(shadow);
+      const s=document.createElement("img");s.src=resolved;s.alt="";s.setAttribute("aria-hidden","true");s.dataset.planePictureSizer="";
+      const t=document.createElement("span");t.dataset.planePictureTintLayer="";t.style.backgroundColor=rule.PictureTint;t.style.maskImage='url("'+resolved+'")';t.style.webkitMaskImage=t.style.maskImage;p.append(s,t);return p;
     }
-    const i=document.createElement("img");i.dataset.planeSource="Picture";i.src=source.value;i.alt="";i.style.opacity=opacityFromTransparency(renderSet.PictureTransparency);if(shadow>0)i.style.filter=contentShadowFilter(shadow);return i;
+    const i=document.createElement("img");i.dataset.planeSource="Picture";i.src=resolvePicture(source.value,resources);i.alt="";i.style.opacity=opacityFromTransparency(renderSet.PictureTransparency);if(shadow>0)i.style.filter=contentShadowFilter(shadow);return i;
   }
   throw new Error("WebRenderer: unsupported source kind "+source.kind);
 }
@@ -75,7 +102,7 @@ function applyEditableState(el,item={}){
   if(validation.Status==="Invalid")el.setAttribute("aria-invalid","true");else el.removeAttribute("aria-invalid");
   if(typeof validation.Message==="string"&&validation.Message)el.setAttribute("title",validation.Message);else el.removeAttribute("title");
 }
-function renderEditableInput(node,parentOrientation,dataSet,renderSet,interaction,cancellers){
+function renderEditableInput(node,parentOrientation,dataSet,renderSet,interaction,cancellers,resources){
   const rule=node.Visual??{},config=node.Input??{},events=node.Events??{};
   const el=document.createElement("input");el.dataset.planeType="EditableInput";el.dataset.planeLogin=node.Login;el.dataset.planeDataSlot=node.dataSlot;el.__planeVisual=rule;
   el.type={Secret:"password",Number:"text",Date:"date",Text:"text"}[config.InputType]??"text";
@@ -97,22 +124,22 @@ function renderEditableInput(node,parentOrientation,dataSet,renderSet,interactio
   cancellers.push(()=>{composing=false;el.blur?.()});
   return el;
 }
-function renderLayoutItem(node,parentOrientation,dataSet,renderSet,parallaxNodes,ownerShadow,interaction,cancellers){
+function renderLayoutItem(node,parentOrientation,dataSet,renderSet,parallaxNodes,ownerShadow,interaction,cancellers,resources){
   if(node.type==="Group"){
     const rule=node.Layout??{};const el=document.createElement("div");el.dataset.planeType="Group";el.dataset.planeGroup="";el.style.display="flex";el.style.flexDirection=rule.Orientation==="Horizontal"?"row":"column";
     if(rule.Gap!==undefined)el.style.gap=px(rule.Gap);if(rule.Width!==undefined)el.style.width=px(rule.Width);if(rule.Height!==undefined)el.style.height=px(rule.Height);applyFill(el,rule,parentOrientation);
-    for(const child of node.children??[])el.append(renderLayoutItem(child,rule.Orientation,dataSet,renderSet,parallaxNodes,ownerShadow,interaction,cancellers));
+    for(const child of node.children??[])el.append(renderLayoutItem(child,rule.Orientation,dataSet,renderSet,parallaxNodes,ownerShadow,interaction,cancellers,resources));
     return el;
   }
-  if(node.type==="EditableInput")return renderEditableInput(node,parentOrientation,dataSet,renderSet,interaction,cancellers);
-  return renderContainer(node,parentOrientation,dataSet,renderSet,parallaxNodes,ownerShadow);
+  if(node.type==="EditableInput")return renderEditableInput(node,parentOrientation,dataSet,renderSet,interaction,cancellers,resources);
+  return renderContainer(node,parentOrientation,dataSet,renderSet,parallaxNodes,ownerShadow,resources);
 }
-function renderContainer(node,parentOrientation,dataSet,renderSet,parallaxNodes,ownerShadow){
+function renderContainer(node,parentOrientation,dataSet,renderSet,parallaxNodes,ownerShadow,resources){
   const rule=node.Visual??{};const el=document.createElement("div");el.dataset.planeType="Container";el.dataset.planeLogin=node.Login;el.dataset.planeDataSlot=node.dataSlot;el.dataset.planeOrder=node.Order;el.__planeVisual=rule;
   el.style.setProperty("--plane-structural-opacity",structuralPercent(combinedPanelTransparency(renderSet,0)));el.style.setProperty("--plane-panel-surface-opacity","1");applyBoxRule(el,rule,renderSet,false);applyFill(el,rule,parentOrientation);
   const parallax=rule.Parallax??renderSet.Parallax??0;if(parallax!==0)parallaxNodes.push({element:el,parallax});
   const body=document.createElement("div");body.dataset.planeContainerContent="";applyContainerContentLayout(body,rule);
-  for(const source of sourcesFromData(node,dataSet))body.append(renderSource(source,renderSet,rule,ownerShadow));
+  for(const source of sourcesFromData(node,dataSet))body.append(renderSource(source,renderSet,rule,ownerShadow,resources));
   if(rule.FillHorizontal===true||rule.Width!==undefined){el.style.overflow="hidden";body.style.minWidth="0";body.style.overflow="hidden";for(const text of body.querySelectorAll('[data-plane-source="Text"]')){text.style.minWidth="0";text.style.maxWidth="100%";text.style.overflow="hidden";text.style.textOverflow="ellipsis";text.style.whiteSpace="nowrap"}}
   el.append(body);return el;
 }
@@ -139,14 +166,14 @@ function bindActivePanel(el,node,interaction,cancellers){
   el.addEventListener("pointercancel",release);el.addEventListener("lostpointercapture",release);
   cancellers.push(release);
 }
-function renderPanel(node,dataSet,renderSet,parallaxNodes,interaction,cancellers){
+function renderPanel(node,dataSet,renderSet,parallaxNodes,interaction,cancellers,resources){
   const el=document.createElement("div");el.dataset.planeType=node.type;el.dataset.planeLogin=node.Login;const rule=node.Visual??{};el.__planeVisual=rule;
   const panelEffects=["SimplePanel","ActivePanel","AggregateActivePanel"].includes(node.type);const pt=panelEffects?(rule.PanelTransparency??0):0;
   el.style.setProperty("--plane-structural-opacity",structuralPercent(combinedPanelTransparency(renderSet,pt)));el.style.setProperty("--plane-panel-surface-opacity",String(1-pt));applyBoxRule(el,rule,renderSet,panelEffects);applyPanelLayout(el,rule);
   const parallax=rule.Parallax??renderSet.Parallax??0;if(parallax!==0)parallaxNodes.push({element:el,parallax});
   const orientation=rule.Direction??"Vertical";const shadow=panelEffects?(rule.Shadow??0):0;
-  for(const item of node.layout??[])el.append(renderLayoutItem(item,orientation,dataSet,renderSet,parallaxNodes,shadow,interaction,cancellers));
-  for(const child of node.children??[])el.append(renderPanel(child,dataSet,renderSet,parallaxNodes,interaction,cancellers));
+  for(const item of node.layout??[])el.append(renderLayoutItem(item,orientation,dataSet,renderSet,parallaxNodes,shadow,interaction,cancellers,resources));
+  for(const child of node.children??[])el.append(renderPanel(child,dataSet,renderSet,parallaxNodes,interaction,cancellers,resources));
   if(node.type==="ActivePanel"||node.type==="AggregateActivePanel")bindActivePanel(el,node,interaction,cancellers);
   return el;
 }
@@ -166,23 +193,24 @@ function bindParallax(root,nodes){
 }
 export function cancelPlaneCodeInteraction(root){activeInteraction.get(root)?.cancel()}
 export function disposePlaneCode(root){
-  cancelPlaneCodeInteraction(root);activeInteraction.delete(root);activeParallax.get(root)?.cancel();activeParallax.delete(root);root.replaceChildren();
+  cancelPlaneCodeInteraction(root);activeInteraction.delete(root);activeParallax.get(root)?.cancel();activeParallax.delete(root);activeResourceStyles.get(root)?.remove?.();activeResourceStyles.delete(root);root.replaceChildren();
 }
-export function renderPlaneCode(root,objectPlan,dataSet,renderSet,interaction=null){
+export function renderPlaneCode(root,objectPlan,dataSet,renderSet,interaction=null,resourceSet=null){
   cancelPlaneCodeInteraction(root);
   root.style.setProperty("--panel-spacing",px(renderSet.PanelSpacing));root.style.setProperty("--background-color",renderSet.BackgroundColor);root.style.setProperty("--panel-color",renderSet.PanelColor);root.style.setProperty("--border-color",renderSet.BorderColor);root.style.setProperty("--text-color",renderSet.TextColor);
-  const parallaxNodes=[],cancellers=[];const roots=Array.isArray(objectPlan)?objectPlan:[objectPlan];
-  root.replaceChildren(...roots.map(node=>renderPanel(node,dataSet,renderSet,parallaxNodes,interaction,cancellers)));
+  const resources=prepareResources(root,resourceSet);const parallaxNodes=[],cancellers=[];const roots=Array.isArray(objectPlan)?objectPlan:[objectPlan];
+  root.replaceChildren(...roots.map(node=>renderPanel(node,dataSet,renderSet,parallaxNodes,interaction,cancellers,resources)));
   activeInteraction.set(root,{cancel(){for(const cancel of cancellers)cancel()}});
   bindParallax(root,parallaxNodes);
 }
-export function patchSetData(root,nextData,renderSet){
+export function patchSetData(root,nextData,renderSet,resourceSet=null){
+  const resources=prepareResources(root,resourceSet);
   for(const el of root.querySelectorAll("[data-plane-data-slot]")){
     if(el.dataset.planeType==="EditableInput"){applyEditableState(el,nextData[el.dataset.planeDataSlot]);continue}
     const body=el.querySelector(':scope > [data-plane-container-content]');if(!body)continue;
     const node={type:"Container",dataSlot:el.dataset.planeDataSlot,Order:el.dataset.planeOrder??"Positive"};const visual=el.__planeVisual??{};
     let owner=el.parentElement;while(owner&&owner.dataset.planeType==="Group")owner=owner.parentElement;
     const shadow=owner?.__planeVisual?.Shadow??0;
-    body.replaceChildren(...sourcesFromData(node,nextData).map(source=>renderSource(source,renderSet,visual,shadow)));
+    body.replaceChildren(...sourcesFromData(node,nextData).map(source=>renderSource(source,renderSet,visual,shadow,resources)));
   }
 }
