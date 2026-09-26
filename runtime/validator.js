@@ -17,6 +17,40 @@ const EDITABLE_INPUT_CAPABILITY="pcode.editable-input.v1";
 const STRING_RULES=["Background","BorderColor","BorderLeftColor","BorderRightColor","BorderTopColor","BorderBottomColor","TextColor","PictureTint"];
 const NON_NEGATIVE_RULES=["BorderWidth","BorderLeftWidth","BorderRightWidth","BorderTopWidth","BorderBottomWidth","Width","Height","Padding","Gap","FontSize"];
 
+
+function decodeBase64(value,label){
+  if(!isNonEmptyString(value)||!/^[A-Za-z0-9+/]*={0,2}$/.test(value)||value.length%4!==0)fail(label+" must be base64");
+  try{
+    const binary=globalThis.atob(value);
+    return Uint8Array.from(binary,ch=>ch.charCodeAt(0));
+  }catch{fail(label+" must be base64")}
+}
+function hasPrefix(bytes,prefix){return prefix.every((value,index)=>bytes[index]===value)}
+export function validateResources(resources){
+  if(resources===undefined||resources===null)return true;
+  if(!resources||typeof resources!=="object"||Array.isArray(resources))fail("Resources must be an object");
+  if(resources.Version!==1)fail("Resources.Version must be 1");
+  const fonts=resources.Fonts??[],pictures=resources.Pictures??[];
+  if(!Array.isArray(fonts)||fonts.length>2)fail("Resources.Fonts must contain 0..2 items");
+  if(!Array.isArray(pictures))fail("Resources.Pictures must be an array");
+  const validate=(items,kind,mime,magic)=>{
+    const names=new Set();
+    for(const item of items){
+      if(!item||typeof item!=="object"||Array.isArray(item))fail("Resources."+kind+" item must be an object");
+      if(!isNonEmptyString(item.Name))fail("Resources."+kind+" resource Name required");
+      if(names.has(item.Name))fail("duplicate Resources."+kind+" name "+item.Name);
+      names.add(item.Name);
+      if(item.Mime!==mime)fail("Resources."+kind+" "+item.Name+" Mime must be "+mime);
+      const bytes=decodeBase64(item.Data,"Resources."+kind+" "+item.Name+".Data");
+      if(!hasPrefix(bytes,magic))fail("Resources."+kind+" "+item.Name+" payload does not match "+mime);
+    }
+    return names;
+  };
+  const fontNames=validate(fonts,"Fonts","font/woff2",[0x77,0x4f,0x46,0x32]);
+  const pictureNames=validate(pictures,"Pictures","image/png",[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);
+  return {fontNames,pictureNames};
+}
+
 function validateEventToken(value,label){
   if(value===undefined||value===null)return;
   if(!isNonEmptyString(value))fail(label+" must be null or a non-empty opaque string");
@@ -75,9 +109,10 @@ function validateValidationState(value,label){
   if(!VALIDATION_STATES.has(value.Status))fail("ValidationState.Status for "+label+" must be None, Valid, or Invalid");
   if(value.Message!==undefined&&typeof value.Message!=="string")fail("ValidationState.Message for "+label+" must be a string");
 }
-export function validateSetData(data,pLang,capabilities=[]){
+export function validateSetData(data,pLang,capabilities=[],resources=null){
   if(!data||typeof data!=="object"||Array.isArray(data))fail("SetData.Data must be an object");
-  validatePLang(pLang,data,capabilities);
+  const resourceIndex=validateResources(resources);
+  validatePLang(pLang,data,capabilities,resources);
   const editable=collectEditableLogins(pLang);
   for(const [login,item] of Object.entries(data)){
     if(!item||typeof item!=="object"||Array.isArray(item))fail("SetData entry for "+login+" must be an object");
@@ -88,19 +123,26 @@ export function validateSetData(data,pLang,capabilities=[]){
     }else{
       if(item.InputValue!==undefined||item.ValidationState!==undefined)fail("input state for "+login+" requires EditableInput");
       if(item.SourceText!==undefined&&typeof item.SourceText!=="string")fail("SourceText for "+login+" must be a string");
-      if(item.SourcePicture!==undefined&&!isCanonicalPngFile(item.SourcePicture))fail("SourcePicture for "+login+" must reference a local PNG file");
+      if(item.SourcePicture!==undefined){
+        if(typeof item.SourcePicture!=="string")fail("SourcePicture for "+login+" must be a string");
+        if(item.SourcePicture.startsWith("res:")){
+          const name=item.SourcePicture.slice(4);
+          if(!name||resourceIndex===true||!resourceIndex.pictureNames.has(name))fail("SourcePicture for "+login+" references missing picture resource "+name);
+        }else if(!isCanonicalPngFile(item.SourcePicture))fail("SourcePicture for "+login+" must reference a local PNG file or res:<name>");
+      }
     }
   }
   return true;
 }
 
-export function validatePLang(pLang,setData={},capabilities=[]){
+export function validatePLang(pLang,setData={},capabilities=[],resources=null){
   if(!Array.isArray(pLang))fail("SetLang.Data must be BasePanel[]");
   const capabilitySet=new Set(capabilities);
+  const resourceIndex=validateResources(resources);
   const logins=new Set();
   const add=(login,label)=>{if(!isNonEmptyString(login))fail(label+".Login required");if(logins.has(login))fail("duplicate Login "+login);logins.add(login)};
   const checkFill=(p,label)=>{for(const key of ["FillHorizontal","FillVertical"])if(p[key]!==undefined&&typeof p[key]!=="boolean")fail(key+" for "+label+" must be boolean")};
-  const checkContainer=c=>{add(c.Login,"Container");const p=c.Properties??{};validateVisualRule(p,"Container "+c.Login,false);checkFill(p,"Container "+c.Login);if(p.Order!==undefined&&!ORDERS.has(p.Order))fail("invalid Order for Container "+c.Login);if(p.HorizontalAlignment!==undefined&&!H_ALIGN.has(p.HorizontalAlignment))fail("invalid HorizontalAlignment for Container "+c.Login);if(p.VerticalAlignment!==undefined&&!V_ALIGN.has(p.VerticalAlignment))fail("invalid VerticalAlignment for Container "+c.Login);if(p.Flip!==undefined||p.Orientation!==undefined)fail("Container "+c.Login+" uses obsolete Flip/Orientation layout properties")};
+  const checkContainer=c=>{add(c.Login,"Container");const p=c.Properties??{};validateVisualRule(p,"Container "+c.Login,false);if(p.Font!==undefined){if(!isNonEmptyString(p.Font))fail("Font for Container "+c.Login+" must be a resource name");if(resourceIndex===true||!resourceIndex.fontNames.has(p.Font))fail("Font for Container "+c.Login+" references missing font resource "+p.Font)}checkFill(p,"Container "+c.Login);if(p.Order!==undefined&&!ORDERS.has(p.Order))fail("invalid Order for Container "+c.Login);if(p.HorizontalAlignment!==undefined&&!H_ALIGN.has(p.HorizontalAlignment))fail("invalid HorizontalAlignment for Container "+c.Login);if(p.VerticalAlignment!==undefined&&!V_ALIGN.has(p.VerticalAlignment))fail("invalid VerticalAlignment for Container "+c.Login);if(p.Flip!==undefined||p.Orientation!==undefined)fail("Container "+c.Login+" uses obsolete Flip/Orientation layout properties")};
   const checkInput=input=>{
     if(!capabilitySet.has(EDITABLE_INPUT_CAPABILITY))fail("EditableInput requires negotiated "+EDITABLE_INPUT_CAPABILITY);
     add(input.Login,"EditableInput");const p={...(input.Properties??{})};
