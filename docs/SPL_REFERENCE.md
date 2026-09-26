@@ -1,6 +1,6 @@
 # SPL reference
 
-`.SPL` is the SetPlan authored format. A SetPlan contains exactly three independent Sets: SetLang, SetData and SetRender.
+`.SPL` is the SetPlan authored format. A SetPlan contains exactly three independent Sets: SetLang, SetData and SetRender. It may additionally contain one optional top-level `Resources` packaging block; `Resources` is not a Set.
 
 ## Top-level shape
 
@@ -8,7 +8,19 @@
 SetLang { Name = "model" Version = 1 Data { ... } }
 SetData { Name = "data" Version = 1 Data { ... } }
 SetRender { Name = "scene" Version = 1 Data { ... } }
+
+Resources {
+  Version = 1
+  Fonts [
+    Font "ui.primary" { Mime = "font/woff2" Data = "<base64>" }
+  ]
+  Pictures [
+    Picture "icon.add" { Mime = "image/png" Data = "<base64>" }
+  ]
+}
 ```
+
+`Resources` is optional. v1 allows 0..2 WOFF2 fonts and 0..N PNG pictures, all embedded as base64. URLs, external fetching, TTF/OTF, SVG, archives, nested files and other resource kinds are outside Resources v1.
 
 ## Typed panel structure
 
@@ -123,6 +135,8 @@ Order = Negative  # Text -> Picture
 ```
 
 Default is Positive. SourcePicture is PNG with contain behavior. Constrained text uses ellipsis.
+
+A Container may use `Font = "ui.primary"` to reference `Resources.Fonts`. A packaged picture is addressed from SetData as `SourcePicture = "res:icon.add"`. Missing referenced resources are validation errors; SPL without Resources keeps prior behavior.
 
 ## Transparent composition example
 
