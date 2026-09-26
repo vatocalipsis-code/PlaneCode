@@ -109,3 +109,60 @@ test('serializeSPL round-trips SetLang, SetData and SetRender without changing d
 test('parser rejects plans missing one of the three independent Sets', () => {
   assert.throws(() => parseSPL(`SetLang { Name="x" Version=1 Data { } }`), /missing SetData/);
 });
+
+
+const resourceSPL = `
+SetLang {
+  Name = "resource-model"
+  Version = 1
+  Data {
+    BasePanel "Base" {
+      Properties { Direction = "Vertical" }
+      Layout [
+        Container "Title" { Properties { Font = "ui.primary" FontSize = 18 } }
+      ]
+      SimplePanels [ ]
+    }
+  }
+}
+SetData {
+  Name = "resource-data"
+  Version = 1
+  Data {
+    "Title" {
+      SourceText = "Hello"
+      SourcePicture = "res:icon.add"
+    }
+  }
+}
+SetRender {
+  Name = "resource-render"
+  Version = 1
+  Data { Transparency = 0 TextTransparency = 0 PictureTransparency = 0 Parallax = 0 }
+}
+Resources {
+  Version = 1
+  Fonts [
+    Font "ui.primary" {
+      Mime = "font/woff2"
+      Data = "d09GMg=="
+    }
+  ]
+  Pictures [
+    Picture "icon.add" {
+      Mime = "image/png"
+      Data = "iVBORw0KGgo="
+    }
+  ]
+}
+`;
+
+test('Resources v1 parses and serializes without becoming a fourth Set', () => {
+  const first=parseSPL(resourceSPL);
+  assert.equal(first.Resources.Version,1);
+  assert.equal(first.Resources.Fonts[0].Name,'ui.primary');
+  assert.equal(first.Resources.Pictures[0].Name,'icon.add');
+  const second=parseSPL(serializeSPL(first));
+  assert.deepEqual(second,first);
+  assert.deepEqual(Object.keys(second).sort(),['Resources','SetData','SetLang','SetRender'].sort());
+});
