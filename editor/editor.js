@@ -2,7 +2,7 @@
 import { setLang as initialSetLang } from '../release/set-lang.js';
 import { setData as initialSetData } from '../release/set-data.js';
 import { setRender as initialSetRender } from '../release/set-render.js';
-import { validatePLang, validateSetRender } from '../runtime/validator.js';
+import { validatePLang, validateSetData, validateSetRender, validateResources } from '../runtime/validator.js';
 import { compileSetLang } from '../runtime/setlang-compiler.js';
 import { renderPlaneCode } from '../runtime/web-renderer.js';
 import { parseSPL, serializeSPL } from './spl.js';
@@ -17,6 +17,7 @@ const inspector=$('#inspector');
 const status=$('#status');
 const sourceName=$('#sourceName');
 const sceneMode=$('#sceneMode');
+const resourcesModeButton=$('#resourcesMode');
 const selectionBox=$('#selectionBox');
 const resizeHandle=$('#resizeHandle');
 
@@ -26,6 +27,7 @@ let dataInvariant=JSON.stringify(project.SetData);
 let selectedPath=['Data',0];
 let openedName='P.Code release';
 let resizeState=null;
+let resourcesMode=false;
 
 const COLLECTIONS=['Layout','Containers','SimplePanels','ActivePanels'];
 
@@ -105,6 +107,13 @@ function clearButton(onClear){
   b.onclick=onClear;
   return b;
 }
+function ensureResources(){project.Resources??={Version:1,Fonts:[],Pictures:[]};project.Resources.Fonts??=[];project.Resources.Pictures??=[];return project.Resources}
+function resourceNames(kind){return (project.Resources?.[kind]??[]).map(item=>item.Name)}
+function uniqueResourceName(kind,fileName){
+  const base=(fileName||'resource').replace(/\.[^.]+$/,'').replace(/[^A-Za-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'')||'resource';
+  const used=new Set(resourceNames(kind));let name=base,n=2;while(used.has(name))name=base+'-'+n++;return name;
+}
+function fileToBase64(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(reader.error??new Error('File read failed'));reader.onload=()=>resolve(String(reader.result).split(',')[1]??'');reader.readAsDataURL(file)})}
 function setProp(node,key,value){
   node.Properties??={};
   if(value===undefined||value==='') delete node.Properties[key];
@@ -225,7 +234,7 @@ function renderTreeNode(node,path,parent){
   const type=document.createElement('span'); type.className='treeType'; type.textContent=k;
   const label=document.createElement('span'); label.textContent=node.Login??'Group';
   button.append(type,label);
-  button.onclick=()=>{selectedPath=path;sceneMode.checked=false;renderAll()};
+  button.onclick=()=>{selectedPath=path;sceneMode.checked=false;resourcesMode=false;renderAll()};
   wrap.append(button);
 
   const children=document.createElement('div');
@@ -277,6 +286,31 @@ function renderGroupInspector(node){
   inspector.append(note('Group is an invisible PLang layout node. It has no color, Login, data slot, or absolute position.'));
 }
 
+function resourceSelectField(node){
+  inspector.append(section('Font resource'));
+  const {el,control}=row('Font');
+  const select=document.createElement('select');
+  const blank=document.createElement('option');blank.value='';blank.textContent='— default renderer font —';select.append(blank);
+  for(const name of resourceNames('Fonts')){const op=document.createElement('option');op.value=name;op.textContent=name;select.append(op)}
+  select.value=node.Properties?.Font??'';
+  select.onchange=()=>setProp(node,'Font',select.value||undefined);
+  control.append(select,clearButton(()=>setProp(node,'Font',undefined)));inspector.append(el);
+  if(resourceNames('Fonts').length===0)inspector.append(note('No packaged fonts yet. Add WOFF2 resources in Resources.'));
+}
+
+function renderContainerPictureResource(node){
+  inspector.append(section('Packaged picture'));
+  const current=project.SetData.Data[node.Login]?.SourcePicture;
+  const {el,control}=row('SourcePicture');
+  const select=document.createElement('select');
+  const keep=document.createElement('option');keep.value='';keep.textContent=current?('Current: '+current):'— no picture —';select.append(keep);
+  for(const name of resourceNames('Pictures')){const op=document.createElement('option');op.value=name;op.textContent='res:'+name;select.append(op)}
+  select.onchange=()=>{if(!select.value)return;project.SetData.Data[node.Login]??={};project.SetData.Data[node.Login].SourcePicture='res:'+select.value;dataInvariant=JSON.stringify(project.SetData);renderAll()};
+  const clear=document.createElement('button');clear.type='button';clear.className='clearButton';clear.textContent='×';clear.title='Clear SourcePicture';clear.onclick=()=>{if(project.SetData.Data[node.Login])delete project.SetData.Data[node.Login].SourcePicture;dataInvariant=JSON.stringify(project.SetData);renderAll()};
+  control.append(select,clear);inspector.append(el);
+  inspector.append(note('This is an explicit SetData SourcePicture edit using the canonical res:<name> form. Save SPL to keep the binding portable.'));
+}
+
 function renderContainerLayout(node){
   inspector.append(section('Container layout'));
   booleanField(node,'FillHorizontal','Fill horizontal');
@@ -285,6 +319,8 @@ function renderContainerLayout(node){
   selectField(node,'VerticalAlignment',['Top','Center','Bottom'],'Vertical content');
   selectField(node,'Direction',['Horizontal','Vertical'],'Content direction');
   selectField(node,'Order',['Positive','Negative'],'Picture / text order');
+  resourceSelectField(node);
+  renderContainerPictureResource(node);
 }
 
 function renderPanelLayout(node){
@@ -317,9 +353,59 @@ function renderInspector(){
     numberField(node,'Shadow');
   }
   orderControls();
-  inspector.append(note('Numeric visual properties use live sliders plus precise numeric input. Font family/resource selection is not shown because Container.Font grammar and embedded SPL resources are NOT YET SPECIFIED.'));
+  inspector.append(note('Numeric visual properties use live sliders plus precise numeric input. Font family uses the canonical packaged resource reference on Container.Font.'));
 }
 
+function resourceUse(kind,name){
+  if(kind==='Fonts'){
+    let used=false;walkNodes(node=>{if(node.Properties?.Font===name)used=true});return used;
+  }
+  return Object.values(project.SetData.Data).some(item=>item?.SourcePicture==='res:'+name);
+}
+function resourceCard(kind,item){
+  const card=document.createElement('div');card.className='resourceCard';
+  const meta=document.createElement('div');meta.className='resourceMeta';
+  const title=document.createElement('strong');title.textContent=item.Name;
+  const type=document.createElement('span');type.textContent=item.Mime;
+  meta.append(title,type);
+  const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';
+  const used=resourceUse(kind,item.Name);remove.disabled=used;remove.title=used?'Resource is currently referenced':'Remove resource';
+  remove.onclick=()=>{const list=ensureResources()[kind];const index=list.indexOf(item);if(index>=0)list.splice(index,1);renderAll()};
+  card.append(meta,remove);return card;
+}
+function uploadResourceButton(kind,label,accept,mime){
+  const button=document.createElement('button');button.type='button';button.textContent=label;
+  button.onclick=()=>{
+    if(kind==='Fonts'&&(project.Resources?.Fonts?.length??0)>=2){setStatus('Resources.Fonts allows at most two fonts',false);return}
+    const input=document.createElement('input');input.type='file';input.accept=accept;
+    input.onchange=async()=>{const file=input.files?.[0];if(!file)return;try{
+      const data=await fileToBase64(file);
+      const resource={Name:uniqueResourceName(kind,file.name),Mime:mime,Data:data};
+      ensureResources()[kind].push(resource);
+      try{validateResources(project.Resources)}catch(error){ensureResources()[kind].pop();throw error}
+      renderAll();setStatus('Resource added: '+resource.Name,true);
+    }catch(error){setStatus(error.message,false)}};
+    input.click();
+  };
+  return button;
+}
+function renderResourcesInspector(){
+  inspector.replaceChildren();
+  inspector.append(section('Resources v1'));
+  const toolbar=document.createElement('div');toolbar.className='resourceActions';
+  toolbar.append(
+    uploadResourceButton('Fonts','+ WOFF2 font','.woff2,font/woff2','font/woff2'),
+    uploadResourceButton('Pictures','+ PNG picture','.png,image/png','image/png')
+  );
+  inspector.append(toolbar,note('Fonts: 0..2 WOFF2. Pictures: PNG. Both are embedded as base64 in the optional top-level Resources block.'));
+  const resources=ensureResources();
+  inspector.append(section('Fonts'));
+  if(resources.Fonts.length===0)inspector.append(note('No font resources.'));
+  for(const item of resources.Fonts)inspector.append(resourceCard('Fonts',item));
+  inspector.append(section('Pictures'));
+  if(resources.Pictures.length===0)inspector.append(note('No picture resources.'));
+  for(const item of resources.Pictures)inspector.append(resourceCard('Pictures',item));
+}
 function renderSceneInspector(){
   inspector.replaceChildren();
   inspector.append(section('Scene · SetRender'));
@@ -355,12 +441,14 @@ function selectRenderedElement(){
 
 function renderPreview(){
   try{
-    validatePLang(project.SetLang.Data,project.SetData.Data,CAPABILITIES);
+    validateResources(project.Resources);
+    validatePLang(project.SetLang.Data,project.SetData.Data,CAPABILITIES,project.Resources);
+    validateSetData(project.SetData.Data,project.SetLang.Data,CAPABILITIES,project.Resources);
     validateSetRender(project.SetRender.Data);
     if(JSON.stringify(project.SetData)!==dataInvariant)throw new Error('SetData changed inside Theme/Skin Editor');
     const plan=compileSetLang(project.SetLang.Data,CAPABILITIES);
-    renderPlaneCode(root,plan,previewData(),project.SetRender.Data);
-    setStatus('valid · SetData unchanged',true);
+    renderPlaneCode(root,plan,previewData(),project.SetRender.Data,null,project.Resources);
+    setStatus('valid · Resources checked',true);
     requestAnimationFrame(selectRenderedElement);
   }catch(error){
     root.replaceChildren();
@@ -369,7 +457,7 @@ function renderPreview(){
     setStatus(error.message,false);
   }
 }
-function renderAll(){renderTree();sceneMode.checked?renderSceneInspector():renderInspector();renderPreview()}
+function renderAll(){renderTree();resourcesMode?renderResourcesInspector():sceneMode.checked?renderSceneInspector():renderInspector();renderPreview()}
 
 function setProject(next,name){
   project=clone(next);
@@ -378,7 +466,7 @@ function setProject(next,name){
   selectedPath=['Data',0];
   openedName=name;
   sourceName.textContent=name;
-  sceneMode.checked=false;
+  sceneMode.checked=false;resourcesMode=false;
   renderAll();
 }
 
@@ -396,7 +484,9 @@ $('#openSpl').onchange=async event=>{
   const file=event.target.files?.[0]; if(!file)return;
   try{
     const parsed=parseSPL(await file.text());
-    validatePLang(parsed.SetLang.Data,parsed.SetData.Data,CAPABILITIES);
+    validateResources(parsed.Resources);
+    validatePLang(parsed.SetLang.Data,parsed.SetData.Data,CAPABILITIES,parsed.Resources);
+    validateSetData(parsed.SetData.Data,parsed.SetLang.Data,CAPABILITIES,parsed.Resources);
     validateSetRender(parsed.SetRender.Data);
     setProject(parsed,file.name);
   }catch(error){setStatus(error.message,false)}
@@ -407,14 +497,15 @@ $('#importSkin').onchange=async event=>{
   try{
     const skin=JSON.parse(await file.text());
     if(!skin.SetLang||!skin.SetRender)throw new Error('Skin must contain SetLang and SetRender');
-    project.SetLang=clone(skin.SetLang);project.SetRender=clone(skin.SetRender);selectedPath=['Data',0];renderAll();
+    project.SetLang=clone(skin.SetLang);project.SetRender=clone(skin.SetRender);if(skin.Resources!==undefined)project.Resources=clone(skin.Resources);selectedPath=['Data',0];resourcesMode=false;renderAll();
   }catch(error){setStatus(error.message,false)}
   event.target.value='';
 };
 $('#saveSpl').onclick=()=>download(`${safeStem(openedName)}-themed.SPL`,serializeSPL(project),'text/plain');
-$('#exportSkin').onclick=()=>download(`${safeStem(openedName)}-skin.json`,JSON.stringify({SetLang:project.SetLang,SetRender:project.SetRender},null,2)+'\n','application/json');
+$('#exportSkin').onclick=()=>download(`${safeStem(openedName)}-skin.json`,JSON.stringify({SetLang:project.SetLang,SetRender:project.SetRender,...(project.Resources?{Resources:project.Resources}:{})},null,2)+'\n','application/json');
 $('#resetSkin').onclick=()=>{project=clone(baseline);dataInvariant=JSON.stringify(project.SetData);selectedPath=['Data',0];renderAll()};
-sceneMode.onchange=()=>{sceneMode.checked?renderSceneInspector():renderInspector();};
+sceneMode.onchange=()=>{resourcesMode=false;sceneMode.checked?renderSceneInspector():renderInspector();};
+resourcesModeButton.onclick=()=>{resourcesMode=true;sceneMode.checked=false;renderResourcesInspector();};
 
 root.addEventListener('click',event=>{
   const el=event.target.closest('[data-plane-login]');
@@ -422,7 +513,7 @@ root.addEventListener('click',event=>{
   const path=findPathByLogin(el.dataset.planeLogin);
   if(!path)return;
   event.preventDefault();event.stopPropagation();
-  selectedPath=path;sceneMode.checked=false;renderAll();
+  selectedPath=path;sceneMode.checked=false;resourcesMode=false;renderAll();
 },true);
 
 resizeHandle.addEventListener('pointerdown',event=>{
