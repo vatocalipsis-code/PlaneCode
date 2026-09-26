@@ -1,5 +1,6 @@
 
 const SET_NAMES = new Set(["SetLang","SetData","SetRender"]);
+const TOP_LEVEL_NAMES = new Set(["SetLang","SetData","SetRender","Resources"]);
 const PUNCT = new Set(["{","}","[","]","="]);
 
 function syntax(message, token) {
@@ -189,6 +190,39 @@ class Parser {
     return obj;
   }
 
+  resourceArrayBody(expectedType){
+    const arr=[];
+    while(!this.is("]")){
+      const type=this.expect("id").value;
+      if(type!==expectedType)syntax("expected "+expectedType+" resource",this.peek(-1));
+      const name=this.expect("string").value;
+      this.expect("{");
+      const item={Name:name};
+      while(!this.is("}")){
+        const key=this.expect("id").value;
+        this.expect("=");item[key]=this.literal();
+      }
+      this.expect("}");
+      arr.push(item);
+    }
+    return arr;
+  }
+
+  resources(){
+    this.expect("{");
+    const resources={};
+    while(!this.is("}")){
+      const field=this.expect("id").value;
+      if(field==="Version"){this.expect("=");resources.Version=this.literal();continue}
+      if(field==="Fonts"){this.expect("[");resources.Fonts=this.resourceArrayBody("Font");this.expect("]");continue}
+      if(field==="Pictures"){this.expect("[");resources.Pictures=this.resourceArrayBody("Picture");this.expect("]");continue}
+      syntax("unsupported Resources field "+field,this.peek());
+    }
+    this.expect("}");
+    resources.Fonts??=[];resources.Pictures??=[];
+    return resources;
+  }
+
   envelope(name){
     this.expect("{");
     const env={};
@@ -210,9 +244,9 @@ class Parser {
     const project={};
     while(!this.is("eof")){
       const name=this.expect("id").value;
-      if(!SET_NAMES.has(name)) syntax(`unknown top-level set ${name}`,this.peek(-1));
+      if(!TOP_LEVEL_NAMES.has(name)) syntax(`unknown top-level block ${name}`,this.peek(-1));
       if(project[name]) syntax(`duplicate ${name}`,this.peek(-1));
-      project[name]=this.envelope(name);
+      project[name]=name==="Resources"?this.resources():this.envelope(name);
     }
     for(const name of SET_NAMES) if(!project[name]) syntax(`missing ${name}`,this.peek());
     return project;
@@ -287,6 +321,25 @@ function serializeEntity(node,collection,indent){
   return rows;
 }
 
+function serializeResources(resources){
+  const rows=["Resources {"];
+  rows.push(line(1,"Version = "+lit(resources.Version??1)));
+  const collections=[["Fonts","Font"],["Pictures","Picture"]];
+  for(const [collection,type] of collections){
+    const items=resources[collection]??[];
+    rows.push(line(1,collection+" ["));
+    for(const item of items){
+      rows.push(line(2,type+" "+q(item.Name)+" {"));
+      rows.push(line(3,"Mime = "+lit(item.Mime)));
+      rows.push(line(3,"Data = "+lit(item.Data)));
+      rows.push(line(2,"}"));
+    }
+    rows.push(line(1,"]"));
+  }
+  rows.push("}");
+  return rows.join("\n");
+}
+
 function serializeEnvelope(name,env){
   const rows=[`${name} {`];
   if(env.Name!==undefined) rows.push(line(1,`Name = ${lit(env.Name)}`));
@@ -309,5 +362,7 @@ function serializeEnvelope(name,env){
 
 export function parseSPL(text){ return new Parser(text).parse(); }
 export function serializeSPL(project){
-  return ["SetLang","SetData","SetRender"].map(name=>serializeEnvelope(name,project[name])).join("\n\n")+"\n";
+  const blocks=["SetLang","SetData","SetRender"].map(name=>serializeEnvelope(name,project[name]));
+  if(project.Resources)blocks.push(serializeResources(project.Resources));
+  return blocks.join("\n\n")+"\n";
 }
