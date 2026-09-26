@@ -71,11 +71,27 @@ Orientation = Negative
 Text → Picture
 ```
 
-`Container.Font` exists; its exact grammar remains NOT YET SPECIFIED.
+`Container.Font` selects an embedded font resource from the optional top-level SPL `Resources.Fonts` collection. Its canonical value is the unique resource name string, for example:
+
+```text
+Font = "ui.primary"
+```
+
+`Font` identifies only the font family/resource. Size and weight remain independent existing properties: `FontSize` and `FontWeight`.
+
+If `Font` is absent, existing/default renderer font behavior applies. If `Font` names a resource that does not exist, SPL validation fails.
 
 ## SourcePicture
 
-SourcePicture references a PNG file only. Intrinsic PNG alpha is preserved.
+SourcePicture references PNG content only. Intrinsic PNG alpha is preserved.
+
+For self-contained SPL, the canonical packaged-resource form is:
+
+```text
+SourcePicture = "res:<picture-resource-name>"
+```
+
+The name resolves against `Resources.Pictures` as defined by the SPL reference. Missing referenced resources are validation errors.
 
 ## Object visual properties
 
