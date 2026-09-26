@@ -39,3 +39,8 @@ h2{font-size:14px;margin:0 0 12px}
 .rangeInput{padding:0!important;accent-color:#61d69b;cursor:ew-resize}
 .numberInput{font-variant-numeric:tabular-nums}
 @media(max-width:1050px){.numericControl{grid-template-columns:1fr 68px}}
+
+.resourceActions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px}
+.resourceCard{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;margin:6px 0;border:1px solid #28475d;border-radius:8px;background:#0d1d29}
+.resourceMeta{display:flex;min-width:0;flex-direction:column;gap:2px}.resourceMeta strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.resourceMeta span{font-size:11px;color:#8aa2b5}
+.resourceCard button{padding:6px 8px}
